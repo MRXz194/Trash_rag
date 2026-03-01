@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+sqlalchemy[asyncio]
+asyncpg
+pgvector
+pydantic-settings
+python-dotenv
+python-multipart
+Pillow
+docling
+vietocr
+openai
+google-generativeai
+torch
+transformers
