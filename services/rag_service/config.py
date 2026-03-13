@@ -9,12 +9,17 @@ class Settings(BaseSettings):
     database_name: str
     database_username: str
 
-    gemini_api_key: str
-    gemini_model: str
+    base_url: str
+    api_key: str
+    model_name: str
 
     document_service_url: str = "http://document-service:8000"
+    redis_url: str = "redis://redis:6379/0"
 
     retrieval_top_k: int = 5
+    rerank_multiplier: int = 3
+    max_history_messages: int = 20
+    history_ttl_seconds: int = 86400
 
     class Config:
         env_file = ".env"

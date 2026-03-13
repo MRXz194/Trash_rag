@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     database_username: str
 
     rag_service_url: str = "http://rag-service:8000"
+    document_service_url: str = "http://document-service:8000"
 
     class Config:
         env_file = ".env"

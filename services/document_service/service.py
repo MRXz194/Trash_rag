@@ -1,5 +1,7 @@
 import os
+import re
 import uuid
+import unicodedata
 import logging
 from pathlib import Path
 
@@ -8,7 +10,8 @@ from sqlalchemy.orm import Session
 
 from vietocr.tool.predictor import Predictor
 from vietocr.tool.config import Cfg
-from docling.document_converter import DocumentConverter
+from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.chunking import HybridChunker
 from openai import OpenAI
 
@@ -22,22 +25,87 @@ settings = get_settings()
 openai_client = OpenAI(api_key=settings.openai_api_key)
 
 vietocr_predictor = None
+docling_converter = None
+docling_chunker = None
 
 
 def get_vietocr_predictor() -> Predictor:
     global vietocr_predictor
     if vietocr_predictor is None:
+        logger.info("Loading VietOCR model (one-time)...")
         config = Cfg.load_config_from_name("vgg_transformer")
         config["cnn"]["pretrained"] = True
-        config["device"] = "cuda"
+        config["device"] = "cpu"
         vietocr_predictor = Predictor(config)
+        logger.info("VietOCR model loaded")
     return vietocr_predictor
+
+
+def get_docling_converter() -> DocumentConverter:
+    global docling_converter
+    if docling_converter is None:
+
+        pipeline_options = PdfPipelineOptions()
+        pipeline_options.do_ocr = False
+        pipeline_options.do_table_structure = False
+
+        docling_converter = DocumentConverter(
+            format_options={
+                "pdf": PdfFormatOption(pipeline_options=pipeline_options),
+            }
+        )
+    return docling_converter
+
+
+def get_docling_chunker() -> HybridChunker:
+    global docling_chunker
+    if docling_chunker is None:
+        docling_chunker = HybridChunker(
+            tokenizer="sentence-transformers/all-MiniLM-L6-v2",
+            max_tokens=512,
+            merge_peers=True,
+        )
+    return docling_chunker
+
+
+IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "bmp", "tiff", "tif"}
+DOCUMENT_EXTENSIONS = {"pdf", "docx", "doc", "pptx", "xlsx", "html", "md", "txt"}
 
 
 def ensure_upload_dir() -> Path:
     upload_path = Path(settings.upload_dir)
     upload_path.mkdir(parents=True, exist_ok=True)
     return upload_path
+
+
+def clean_text(text: str) -> str:
+    text = unicodedata.normalize("NFC", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = text.strip()
+    return text
+
+
+def split_text_into_chunks(text: str, max_chars: int = 500, overlap: int = 50) -> list[str]:
+    if len(text) <= max_chars:
+        return [text]
+
+    sentences = re.split(r'(?<=[.!?。\n])\s+', text)
+    chunks = []
+    current_chunk = ""
+
+    for sentence in sentences:
+        if len(current_chunk) + len(sentence) > max_chars and current_chunk:
+            chunks.append(current_chunk.strip())
+            overlap_text = current_chunk[-overlap:] if len(current_chunk) > overlap else current_chunk
+            current_chunk = overlap_text + " " + sentence
+        else:
+            current_chunk = current_chunk + " " + sentence if current_chunk else sentence
+
+    if current_chunk.strip():
+        chunks.append(current_chunk.strip())
+
+    return chunks
 
 
 def get_embedding(text: str) -> list[float]:
@@ -64,16 +132,21 @@ def get_embeddings_batch(texts: list[str]) -> list[list[float]]:
 
 
 def process_document(file_path: str) -> list[dict]:
-    converter = DocumentConverter()
+    converter = get_docling_converter()
     result = converter.convert(file_path)
     doc = result.document
 
-    chunker = HybridChunker(tokenizer="sentence-transformers/all-MiniLM-L6-v2")
+    chunker = get_docling_chunker()
     chunks = list(chunker.chunk(doc))
 
     chunk_data = []
     for i, chunk in enumerate(chunks):
         chunk_text = chunk.text if hasattr(chunk, "text") else str(chunk)
+        chunk_text = clean_text(chunk_text)
+
+        if not chunk_text:
+            continue
+
         meta = {}
         if hasattr(chunk, "meta"):
             meta = {
@@ -98,9 +171,22 @@ def run_vietocr(image_path: str) -> str:
 
 def process_image(file_path: str) -> list[dict]:
     text = run_vietocr(file_path)
-    if text.strip():
-        return [{"text": text, "metadata": {"source": "vietocr", "file": file_path}, "index": 0}]
-    return []
+    text = clean_text(text)
+
+    if not text:
+        return []
+
+    text_chunks = split_text_into_chunks(text, max_chars=500, overlap=50)
+
+    chunk_data = []
+    for i, chunk_text in enumerate(text_chunks):
+        chunk_data.append({
+            "text": chunk_text,
+            "metadata": {"source": "vietocr", "file": file_path, "part": i + 1, "total_parts": len(text_chunks)},
+            "index": i,
+        })
+
+    return chunk_data
 
 
 def save_uploaded_files(files: list[tuple[str, str, str | None]], chat_id: int, db: Session) -> list[Document]:

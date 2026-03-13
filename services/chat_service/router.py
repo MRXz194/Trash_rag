@@ -72,7 +72,7 @@ def send_message(chat_id: int, data: MessageCreate, db: Session = Depends(get_db
         raise HTTPException(status_code=502, detail="RAG lỗi")
     except httpx.RequestError as e:
         logger.error(f"RAG không thể kết nối: {e}")
-        raise HTTPException(status_code=503, detail="RAG không thể kết nối")
+        raise HTTPException(status_code=503, detail="RAG cant kết nối")
 
     db.refresh(chat)
 
@@ -129,6 +129,14 @@ def delete_chat(chat_id: int, db: Session = Depends(get_db)):
     chat = db.get(Chat, chat_id)
     if not chat:
         raise HTTPException(status_code=404, detail="Ko tìm thấy chat")
+
+    try:
+        httpx.delete(
+            f"{settings.document_service_url}/internal/by-chat/{chat_id}",
+            timeout=30.0,
+        )
+    except Exception as e:
+        logger.warning(f"Không xóa được docs của chat {chat_id}: {e}")
 
     db.delete(chat)
     db.commit()

@@ -45,6 +45,7 @@ class ChunkResult(BaseModel):
     text: str
     metadata: dict
     document_id: int
+    score: float = 0.0
 
 
 class SearchResponse(BaseModel):

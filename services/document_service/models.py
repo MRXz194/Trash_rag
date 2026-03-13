@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, ForeignKey, JSON, TIMESTAMP
+from sqlalchemy import Column, Integer, String, Text, ForeignKey, JSON, TIMESTAMP, Index, UniqueConstraint
 from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import text
@@ -34,5 +34,16 @@ class DocumentChunk(Base):
     embedding = Column(Vector(settings.embedding_dim), nullable=True)
     chunk_metadata = Column(JSON, nullable=True, default=dict)
     chunk_index = Column(Integer, nullable=False, default=0)
+    chunk_hash = Column(String(64), nullable=True, unique=True, index=True)
 
     document = relationship("Document", back_populates="chunks")
+
+    __table_args__ = (
+        Index(
+            "ix_chunk_embedding_hnsw",
+            embedding,
+            postgresql_using="hnsw",
+            postgresql_with={"m": 16, "ef_construction": 64},
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+    )

@@ -134,16 +134,21 @@ def delete_document(document_id: int, db: Session = Depends(get_db)):
 def search_chunks(data: SearchRequest, db: Session = Depends(get_db)):
     query_embedding = get_embedding(data.query)
 
+    distance_expr = DocumentChunk.embedding.cosine_distance(query_embedding)
+
     stmt = (
-        select(DocumentChunk)
+        select(DocumentChunk, distance_expr.label("distance"))
         .join(DocumentChunk.document)
         .where(Document.chat_id == data.chat_id)
-        .order_by(DocumentChunk.embedding.cosine_distance(query_embedding))
+        .where(DocumentChunk.embedding.isnot(None))
+        .order_by(distance_expr)
         .limit(data.top_k)
     )
 
-    result = db.execute(stmt)
-    chunks = result.scalars().all()
+    results = db.execute(stmt).all()
+
+    max_distance = 0.7
+    filtered = [(chunk, dist) for chunk, dist in results if dist < max_distance]
 
     return SearchResponse(
         chunks=[
@@ -151,7 +156,21 @@ def search_chunks(data: SearchRequest, db: Session = Depends(get_db)):
                 text=chunk.text,
                 metadata=chunk.chunk_metadata or {},
                 document_id=chunk.document_id,
+                score=round(1.0 - dist, 4),
             )
-            for chunk in chunks
+            for chunk, dist in filtered
         ]
     )
+
+
+@router.delete("/internal/by-chat/{chat_id}")
+def delete_documents_by_chat(chat_id: int, db: Session = Depends(get_db)):
+    stmt = select(Document).where(Document.chat_id == chat_id)
+    documents = db.execute(stmt).scalars().all()
+
+    count = len(documents)
+    for doc in documents:
+        db.delete(doc)
+
+    db.commit()
+    return {"message": f"Xóa {count} docs của chat {chat_id}", "deleted": count}
